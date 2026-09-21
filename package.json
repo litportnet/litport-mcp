@@ -1,0 +1,41 @@
+{
+  "name": "@litportnet/litport-mcp",
+  "version": "0.1.0",
+  "mcpName": "io.github.litportnet/litport-mcp",
+  "description": "MCP server for the Litport account API: tokens, usage, pools, geo targeting and proxy URLs.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "litport-mcp": "./src/index.js"
+  },
+  "files": [
+    "src",
+    "server.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "generate-contracts": "node scripts/generate-contracts.mjs",
+    "test": "node --test 'test/**/*.test.js'"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.30.0",
+    "zod": "^4.1.13"
+  },
+  "keywords": [
+    "mcp",
+    "model-context-protocol",
+    "proxy",
+    "litport",
+    "residential-proxy",
+    "ai-agent"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/litportnet/litport-mcp.git"
+  },
+  "homepage": "https://litport.net/docs/api"
+}

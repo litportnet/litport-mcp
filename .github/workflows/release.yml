@@ -1,0 +1,86 @@
+# Publishes @litportnet/litport-mcp to npm and then registers the release with
+# the official MCP Registry.
+#
+# Authentication is tokenless:
+#   npm          - trusted publishing (OIDC). Configure once at
+#                  npmjs.com -> @litportnet/litport-mcp -> Settings -> Trusted Publisher
+#                  with repository `litportnet/litport-mcp`, workflow `release.yml`,
+#                  environment `npm`. npm only exposes this setting after the package
+#                  exists, so version 0.1.0 has to be published once with a token first.
+#   MCP Registry - GitHub OIDC. The `io.github.litportnet/*` namespace is granted by the
+#                  repository owner, so no secret is required.
+name: Release
+
+on:
+  push:
+    tags: ['v[0-9]+.[0-9]+.[0-9]+']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    environment: npm
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - run: npm ci
+      - run: npm test
+      - name: Check that the tag matches package.json
+        if: startsWith(github.ref, 'refs/tags/')
+        run: |
+          TAG_VERSION="${GITHUB_REF#refs/tags/v}"
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          test "$TAG_VERSION" = "$PKG_VERSION" || { echo "Tag $TAG_VERSION does not match package.json $PKG_VERSION" >&2; exit 1; }
+      - name: Check that server.json agrees with package.json
+        run: |
+          node -e '
+            const pkg = require("./package.json")
+            const server = require("./server.json")
+            const problems = []
+            if (server.name !== pkg.mcpName) problems.push("server.json name does not match package.json mcpName")
+            if (server.version !== pkg.version) problems.push("server.json version does not match package.json version")
+            const npmPackage = server.packages.find(entry => entry.registryType === "npm")
+            if (!npmPackage) problems.push("server.json has no npm package entry")
+            else {
+              if (npmPackage.identifier !== pkg.name) problems.push("server.json npm identifier does not match package.json name")
+              if (npmPackage.version !== pkg.version) problems.push("server.json npm version does not match package.json version")
+            }
+            if (server.description.length > 100) problems.push("server.json description exceeds 100 characters")
+            if (problems.length) { console.error(problems.join("\n")); process.exit(1) }
+          '
+      # The first version had to be published with a token, because npm only exposes
+      # the trusted-publisher setting on a package that already exists. Re-publishing
+      # an existing version is a hard error, so skip it and go straight to the registry.
+      - name: Check whether this version is already on npm
+        id: npm_state
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          NAME="$(node -p "require('./package.json').name")"
+          # Ask the registry over plain HTTP. `npm view` reads the npmrc that
+          # setup-node writes, which demands NODE_AUTH_TOKEN and reports an
+          # unauthenticated lookup as "missing".
+          ENCODED="${NAME/\//%2f}"
+          if curl -fsS -o /dev/null "https://registry.npmjs.org/$ENCODED/$VERSION"; then
+            echo "published=true" >> "$GITHUB_OUTPUT"
+            echo "$NAME@$VERSION is already on npm; skipping the npm publish step."
+          else
+            echo "published=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish to npm
+        if: steps.npm_state.outputs.published == 'false'
+        run: npm publish --access public --provenance
+      - name: Install mcp-publisher
+        run: curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+      - name: Authenticate to the MCP Registry
+        run: ./mcp-publisher login github-oidc
+      - name: Publish to the MCP Registry
+        run: ./mcp-publisher publish

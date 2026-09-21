@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.litportnet/litport-mcp",
+  "description": "MCP server for the Litport account API: tokens, usage, pools, geo targeting and proxy URLs.",
+  "repository": {
+    "url": "https://github.com/litportnet/litport-mcp",
+    "source": "github"
+  },
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@litportnet/litport-mcp",
+      "version": "0.1.0",
+      "transport": {
+        "type": "stdio"
+      }
+    }
+  ]
+}
