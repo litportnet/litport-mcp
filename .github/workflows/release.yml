@@ -78,6 +78,23 @@ jobs:
       - name: Publish to npm
         if: steps.npm_state.outputs.published == 'false'
         run: npm publish --access public --provenance
+      # The registry validates by fetching the exact npm version, and npm's public read path lags
+      # behind a successful publish by a minute or more. Without this wait the registry step fails
+      # with "version was not found" on every release that actually published.
+      - name: Wait for npm to serve the published version
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          NAME="$(node -p "require('./package.json').name")"
+          ENCODED="${NAME/\//%2f}"
+          for attempt in $(seq 1 30); do
+            if curl -fsS -o /dev/null "https://registry.npmjs.org/$ENCODED/$VERSION"; then
+              echo "$NAME@$VERSION is visible on npm after $((attempt * 10))s."
+              exit 0
+            fi
+            sleep 10
+          done
+          echo "$NAME@$VERSION did not appear on npm within 300s." >&2
+          exit 1
       - name: Install mcp-publisher
         run: curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
       - name: Authenticate to the MCP Registry
