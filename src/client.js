@@ -17,13 +17,21 @@ const buildUrl = (baseUrl, path, query = {}) => {
   return url
 }
 
-export const createClient = ({ apiKey, baseUrl, fetchImpl = fetch }) => ({
+// Sent on every request so the account API can tell MCP traffic apart from a hand-written HTTP
+// client. It identifies the package and version only — never the user, the host, or the key.
+export const userAgentFor = version => `litport-mcp/${version}`
+
+export const createClient = ({ apiKey, baseUrl, userAgent, fetchImpl = fetch }) => ({
   get: async (path, query) => {
     const url = buildUrl(baseUrl, path, query)
     let response
     try {
       response = await fetchImpl(url, {
-        headers: { Authorization: `Bearer ${apiKey}`, Accept: 'application/json' },
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          Accept: 'application/json',
+          ...(userAgent ? { 'User-Agent': userAgent } : {}),
+        },
       })
     } catch (cause) {
       // Never include the URL object's headers or the key in what surfaces to the model.

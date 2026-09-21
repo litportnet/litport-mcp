@@ -116,7 +116,8 @@ country slug or an out-of-range session lifetime is reported without spending a 
 ```sh
 npm install
 npm test               # node --test test/
-npm run generate-contracts   # regenerate src/contracts.generated.js from the web app
+# src/contracts.generated.js is regenerated from the Litport application repository,
+# not from this one — see Contracts below.
 ```
 
 `src/contracts.generated.js` is generated from the web application's canonical contract modules and
@@ -131,4 +132,5 @@ MIT
 `src/contracts.generated.js` vendors the proxy error reference and pay-per-GB parameter rules from
 the Litport web application, so `explain_proxy_error` and `build_proxy_url` answer without a network
 call. It is generated, not hand-edited, and a parity check in the application fails if the two ever
-disagree.
+disagree. Regenerate with `npm run generate-contracts` from the copy inside the Litport
+application repository, where the source contracts live.

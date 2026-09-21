@@ -1,6 +1,6 @@
 {
   "name": "@litportnet/litport-mcp",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "mcpName": "io.github.litportnet/litport-mcp",
   "description": "MCP server for the Litport account API: tokens, usage, pools, geo targeting and proxy URLs.",
   "license": "MIT",
@@ -18,7 +18,6 @@
     "LICENSE"
   ],
   "scripts": {
-    "generate-contracts": "node scripts/generate-contracts.mjs",
     "test": "node --test 'test/**/*.test.js'"
   },
   "dependencies": {

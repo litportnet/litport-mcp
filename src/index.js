@@ -6,7 +6,7 @@ import path from 'node:path'
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js'
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 
-import { createClient } from './client.js'
+import { createClient, userAgentFor } from './client.js'
 import { ConfigError, loadConfig } from './config.js'
 import { registerTools } from './tools/index.js'
 
@@ -28,7 +28,7 @@ const main = async () => {
     throw err
   }
 
-  const client = createClient({ apiKey: config.apiKey, baseUrl: config.baseUrl })
+  const client = createClient({ apiKey: config.apiKey, baseUrl: config.baseUrl, userAgent: userAgentFor(pkg.version) })
   const server = new McpServer({ name: 'litport', version: pkg.version })
   registerTools(server, { client, config })
 
