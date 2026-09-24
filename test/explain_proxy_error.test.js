@@ -18,12 +18,13 @@ test('resolves a known code with retry guidance and action, no network call', as
   const result = await server.call('explain_proxy_error', { code: 13 })
   assert.equal(result.isError, undefined)
   assert.match(result.content[0].text, /ErrorPpgNotEnoughUnits/)
-  assert.match(result.content[0].text, /Insufficient balance/)
+  assert.match(result.content[0].text, /Insufficient account balance/)
   assert.match(result.content[0].text, /Retry:/)
   assert.match(result.content[0].text, /Action:/)
   const jsonStart = result.content[0].text.indexOf('{')
   const payload = JSON.parse(result.content[0].text.slice(jsonStart))
   assert.equal(payload.proxyError.code, 13)
+  assert.equal(payload.proxyError.http, '402')
 })
 
 test('reports an unknown code honestly and lists the valid range', async () => {

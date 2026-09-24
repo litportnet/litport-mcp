@@ -150,9 +150,8 @@ export const proxyErrors = Object.freeze([
   {
     "code": 13,
     "symbol": "ErrorPpgNotEnoughUnits",
-    "message": "Insufficient balance",
-    "wireNote": "The wire message may be custom.",
-    "http": "500",
+    "message": "Insufficient account balance",
+    "http": "402",
     "retry": "Not a network retry",
     "action": "Check or add account balance in the dashboard."
   },

@@ -1,6 +1,6 @@
 {
   "name": "@litportnet/litport-mcp",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "mcpName": "io.github.litportnet/litport-mcp",
   "description": "MCP server for the Litport account API: tokens, usage, pools, geo targeting and proxy URLs.",
   "license": "MIT",
