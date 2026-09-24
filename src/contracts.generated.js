@@ -231,14 +231,19 @@ export const proxyErrors = Object.freeze([
 
 export const socksReplies = Object.freeze([
   {
+    "reply": "auth 0x01",
+    "meaning": "Login rejected",
+    "categories": "The username/password step (RFC 1929) failed and the connection closed before any request. Most token and account checks run here: unknown, disabled or expired token or a wrong password (4), token access mismatch (5), wrong hub (8) or protocol (9), invalid PPG pool parameters (11), PPG accounting (12), insufficient balance (13), and package state (17–22). Clients usually report this as an authentication failure."
+  },
+  {
     "reply": "0x01",
     "meaning": "General failure",
-    "categories": "Internal, upstream selection, PPG upstream, remote connection, or upstream I/O failure. Commonly codes 2, 7, 14, 15, or 16."
+    "categories": "Internal failure, or the upstream connection failed after the request was admitted. Commonly codes 2, 14, 15, or 16."
   },
   {
     "reply": "0x02",
     "meaning": "Connection not allowed",
-    "categories": "Authentication, token, hub/protocol, PPG, concurrent-connection, and rate-limit failures share this reply."
+    "categories": "The request was refused after login: destination or network rules (5), concurrent-connection limit (6), no available upstream (7), rate limit (10), PPG upstream selection (11), or PPG UDP that the selected upstream does not support."
   },
   {
     "reply": "0x07",

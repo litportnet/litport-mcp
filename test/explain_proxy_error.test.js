@@ -46,4 +46,6 @@ test('matches a SOCKS5 reply by hex code', async () => {
   const result = await server.call('explain_proxy_error', { message: '0x02' })
   assert.equal(result.isError, undefined)
   assert.match(result.content[0].text, /Connection not allowed/)
+  // Credential and account failures are rejected at the SOCKS5 login, not with reply 0x02.
+  assert.doesNotMatch(result.content[0].text, /Authentication/)
 })
