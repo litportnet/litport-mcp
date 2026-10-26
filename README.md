@@ -8,7 +8,7 @@ agent or chat client.
 
 The server cannot create, buy, renew, cancel, or disable a token or package, reset credentials, or
 spend account balance. It can change a token's location and rotation interval, request a new IP for
-a static datacenter/ISP token, and add, remove, or set a package's allowed IPs.
+a datacenter/ISP token, and add, remove, or set a package's allowed IPs.
 
 ## Install and configure
 
@@ -85,7 +85,7 @@ model's context until a specific token is named.
 | `list_location_options` | yes | | List the region/city (datacenter/ISP) or city/carrier (mobile) values a token can move to. |
 | `set_token_location` | yes | yes | Change a token's location (and carrier, for mobile). |
 | `set_rotation` | yes | yes | Change a token's rotation interval. |
-| `get_new_ip` | yes | yes | Replace a static datacenter/ISP token's IP, using its weekly allowance. Not safe to blindly retry. |
+| `get_new_ip` | yes | yes | Get a new IP for a datacenter/ISP token. A static token uses its weekly allowance; a rotating one has a short wait between calls. Not safe to blindly retry on a static token. |
 | `list_packages` | yes | | List proxy packages: product, status, add-ons, limits, dates, and token IDs. |
 | `get_package` | yes | | Get one package by its public numeric ID. |
 | `get_allowed_ips` | yes | | Get a package's allowed-IP list and limit. |
@@ -117,11 +117,20 @@ retrying blindly.
 answers `NOT_SUPPORTED` when `rotation.changeable` is false (e.g. a Multi-location mobile token,
 whose interval always follows its current phone).
 
-`get_new_ip` requests a new IP for a static datacenter/ISP token, spending its weekly allowance. It
-is **not safe to blindly retry**: call `get_token_location` first and check
+`get_new_ip` requests a new IP for a datacenter/ISP token. On a static token it spends the weekly
+allowance and is **not safe to blindly retry**: call `get_token_location` first and check
 `canChangeNow`/`nextChangeAt`, because a second call inside the same week fails with
 `CHANGE_LIMIT` rather than returning a second new IP. If a call's result is lost or ambiguous,
 re-read `get_token_location` instead of calling it again.
+
+On a rotating token it works at any time. The new IP is always different from the current one, and
+the token's automatic timer restarts. Two calls must be at least the type's shortest rotation
+interval apart (the smallest value in the token's `rotation.options`); inside that wait the call
+fails with `CHANGE_LIMIT`, `nextChangeAt` and `Retry-After`. `LOCATION_UNAVAILABLE` means no other IP
+qualifies right now: nothing changed, and the call still uses up the wait. After a lost result,
+`get_token_location` cannot confirm the change (its `canChangeNow`/`nextChangeAt` are about the
+location, not this wait). Calling again after `Retry-After` is harmless and just gives another new
+IP; a `CHANGE_LIMIT` right after a lost result does not prove the change happened.
 
 ### Package allowed-IP writes
 

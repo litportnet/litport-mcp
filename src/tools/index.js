@@ -52,8 +52,9 @@ const annotations = openWorldHint => ({
 })
 
 // idempotentHint defaults to true (repeating a write with the same arguments leaves the same
-// state) -- get_new_ip is the one write that passes false, because a repeat inside the week fails
-// with CHANGE_LIMIT rather than reproducing the same result.
+// state) -- get_new_ip is the one write that passes false, because a repeat on a static token inside
+// the week fails with CHANGE_LIMIT, and a repeat on a rotating one gives another IP, rather than
+// reproducing the same result.
 const writeAnnotations = (destructiveHint, idempotentHint = true) => ({
   readOnlyHint: false,
   destructiveHint,
@@ -272,13 +273,21 @@ export const registerTools = (server, { client, config, fetchImpl = fetch }) => 
   }))
 
   server.registerTool('get_new_ip', {
-    description: 'Replace a static datacenter/ISP token\'s IP address with a new one in the same '
-      + 'location, spending its weekly allowance. Only for static (non-rotating) datacenter/ISP '
-      + 'tokens — a rotating proxy changes IP on its own and answers NOT_SUPPORTED here. This is NOT '
-      + 'safe to blindly retry: call get_token_location first and check canChangeNow/nextChangeAt, '
-      + 'because a second call inside the same week fails with CHANGE_LIMIT instead of returning a '
-      + 'second new IP. If a call\'s result is lost or ambiguous, re-read get_token_location instead '
-      + 'of calling this again.',
+    description: 'Get a new IP address for a datacenter/ISP token, in the same location. A static '
+      + 'token spends its weekly allowance. This is NOT safe to blindly retry on a static token: call '
+      + 'get_token_location first and check canChangeNow/nextChangeAt, because a second call inside '
+      + 'the same week fails with CHANGE_LIMIT instead of returning a second new IP. If a call\'s '
+      + 'result is lost or ambiguous, re-read get_token_location instead of calling this again. A '
+      + 'rotating token can get a new IP at any time. The new IP is always different from the current '
+      + 'one, and the token\'s automatic timer restarts. Two calls must be at least the type\'s '
+      + 'shortest rotation interval apart (the smallest value in the token\'s rotation.options); a '
+      + 'call inside that wait fails with CHANGE_LIMIT, so wait for nextChangeAt (also Retry-After). '
+      + 'LOCATION_UNAVAILABLE means no other IP qualifies right now: nothing changed, and the call '
+      + 'still uses up the wait. After a lost result on a rotating token, get_token_location cannot '
+      + 'confirm the change, because its canChangeNow/nextChangeAt are about the location and not '
+      + 'this wait. Calling again after Retry-After is harmless; it just gives another new IP. A '
+      + 'CHANGE_LIMIT right after a lost result does not prove the change happened. Any other token '
+      + '(mobile, pay-per-GB, Private Device) answers NOT_SUPPORTED.',
     inputSchema: {
       tokenId: z.number().int(),
     },

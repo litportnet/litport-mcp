@@ -82,3 +82,20 @@ test('get_new_ip surfaces CHANGE_LIMIT with nextChangeAt and Retry-After so the 
   assert.match(result.content[0].text, /nextChangeAt: 2026-10-06T00:00:00\.000Z/)
   assert.match(result.content[0].text, /Retry-After: 604800s/)
 })
+
+test('get_new_ip describes both token kinds: the static weekly rule and the rotating wait, with retry guidance for each', () => {
+  const server = setup({ routes: [] })
+  const { description } = server.tools.get('get_new_ip').config
+  // static: weekly allowance, read the location before retrying
+  assert.match(description, /static token spends its weekly allowance/)
+  assert.match(description, /get_token_location/)
+  // rotating: any time, wait from rotation.options, CHANGE_LIMIT and LOCATION_UNAVAILABLE both use the wait
+  assert.match(description, /rotating token can get a new IP at any time/)
+  assert.match(description, /rotation\.options/)
+  assert.match(description, /CHANGE_LIMIT/)
+  assert.match(description, /LOCATION_UNAVAILABLE/)
+  assert.match(description, /Retry-After/)
+  // the old wording said a rotating token answers NOT_SUPPORTED here
+  assert.doesNotMatch(description, /rotating proxy changes IP on its own/)
+  assert.match(description, /Private Device\) answers NOT_SUPPORTED/)
+})
