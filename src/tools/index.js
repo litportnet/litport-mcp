@@ -26,9 +26,11 @@ const errorResult = text => ({
 // verbatim so the model can explain the failure and, where a docsUrl exists, point the user at it.
 // nextChangeAt and Retry-After (both set on a 409 CHANGE_LIMIT, e.g. from set_token_location or
 // get_new_ip) are surfaced the same way, so the model sees a wait exists instead of retrying blindly.
+// `retryable` is the API's own verdict on whether sending the same call again can succeed and is safe.
 const apiErrorResult = error => {
   const parts = [error.message || 'The Litport API request failed.']
   if (error.code) parts.push(`code: ${error.code}`)
+  if (typeof error.retryable === 'boolean') parts.push(`retryable: ${error.retryable}`)
   if (error.nextChangeAt) parts.push(`nextChangeAt: ${error.nextChangeAt}`)
   if (error.retryAfter) parts.push(`Retry-After: ${error.retryAfter}s`)
   if (error.docsUrl) parts.push(`docs: ${error.docsUrl}`)
@@ -74,6 +76,30 @@ const MASK_HINT = 'Passwords are masked in this listing. Call get_token_credenti
 const maskToken = token => {
   const { password: _password, ...rest } = token
   return { ...rest, password: null, passwordSet: true }
+}
+
+// ---------------------------------------------------------------------------
+// Credential-free write results (update_token)
+// ---------------------------------------------------------------------------
+
+// What update_token returns of the API's answer: an allowlist, so a credential-bearing field the API adds
+// later (the username, password, change-IP link, an endpoint) is left out until someone chooses to show it.
+// create_token and reissue_credentials return the whole proxy on purpose; the API's PATCH answer has the
+// credentials too, and a label change must not put them into the model's context.
+const MUTATION_RESULT_FIELDS = [
+  'id', 'type', 'status', 'disabledReason', 'label', 'externalRef', 'createdAt', 'expiresAt',
+  'allowanceBytes', 'allowanceReservedBytes', 'poolSelection', 'packageId',
+]
+
+const withoutCredentials = response => {
+  const proxy = response && typeof response === 'object' ? response.data : null
+  const data = {}
+  if (proxy && typeof proxy === 'object') {
+    for (const field of MUTATION_RESULT_FIELDS) {
+      if (Object.hasOwn(proxy, field)) data[field] = proxy[field]
+    }
+  }
+  return { data }
 }
 
 // ---------------------------------------------------------------------------
@@ -136,10 +162,33 @@ const validateProxyUrlParams = ({ pool, country, region, city, sid, sttl }) => {
 }
 
 // ---------------------------------------------------------------------------
+// Keyless mode
+// ---------------------------------------------------------------------------
+
+// Without LITPORT_API_KEY the server offers only the tools that can work: the support tools (guest
+// conversations) and the three that need no account (explain_proxy_error reads a bundled table,
+// search_docs and get_doc read public pages). Listing the account tools as well would only invite
+// retries of calls that cannot succeed.
+const KEYLESS_TOOLS = new Set([
+  'contact_support',
+  'get_support_replies',
+  'reply_to_support',
+  'explain_proxy_error',
+  'search_docs',
+  'get_doc',
+])
+
+const keylessOnly = server => ({
+  registerTool: (name, ...rest) => (KEYLESS_TOOLS.has(name) ? server.registerTool(name, ...rest) : undefined),
+})
+
+// ---------------------------------------------------------------------------
 // registerTools
 // ---------------------------------------------------------------------------
 
-export const registerTools = (server, { client, config, fetchImpl = fetch }) => {
+export const registerTools = (rawServer, { client, config, fetchImpl = fetch }) => {
+  const server = client.hasApiKey ? rawServer : keylessOnly(rawServer)
+
   // ---- Tokens ---------------------------------------------------------------------------------
 
   server.registerTool('list_tokens', {
@@ -202,6 +251,34 @@ export const registerTools = (server, { client, config, fetchImpl = fetch }) => 
     return jsonResult(response)
   }))
 
+  server.registerTool('get_usage', {
+    description: 'Get daily usage for many proxies at once over one date range (default: the last 30 days; at '
+      + 'most 92 days), including deleted proxies, newest proxy first, paged by cursor. Each proxy carries '
+      + 'its label, externalRef, deleted flag, a summary and per-day buckets. Pay-per-GB proxies also carry '
+      + 'costUnits (the charge for the day in balance units; null for a package proxy or a day with no '
+      + 'recorded charge). A deleted proxy with no usage in the range appears only when its id is in '
+      + 'tokenIds. The API allows 10 of these calls per minute per key (RATE_LIMITED beyond that). Use get_token_usage '
+      + 'for one proxy by hour or month, with domains or charge components.',
+    inputSchema: {
+      from: z.string().optional().describe('Inclusive UTC ISO-8601 timestamp, e.g. 2026-11-01T00:00:00Z.'),
+      to: z.string().optional().describe('Exclusive UTC ISO-8601 timestamp, after from.'),
+      tokenIds: z.array(z.number().int().min(1)).min(1).max(100).optional()
+        .describe('Only these proxies (at most 100 ids). An id that is not the account\'s is skipped. Omit for all proxies.'),
+      limit: z.number().int().min(1).max(100).default(50).describe('Proxies per page.'),
+      cursor: z.string().optional().describe('page.nextCursor from the previous page.'),
+    },
+    annotations: annotations(true),
+  }, withApiErrorHandling(async ({ from, to, tokenIds, limit = 50, cursor }) => {
+    const response = await client.get('/usage', {
+      from,
+      to,
+      tokenIds: tokenIds && tokenIds.length > 0 ? tokenIds.join(',') : undefined,
+      limit,
+      cursor,
+    })
+    return jsonResult(response)
+  }))
+
   server.registerTool('get_token_location', {
     description: 'Get a token\'s current location/carrier target: whether it can change right now, and '
       + 'nextChangeAt when it cannot. Answers 409 NOT_SUPPORTED for a token whose location can\'t '
@@ -235,8 +312,11 @@ export const registerTools = (server, { client, config, fetchImpl = fetch }) => 
   server.registerTool('set_token_location', {
     description: 'Change a token\'s location (and carrier, for a mobile token). Send region and city '
       + 'for a datacenter/ISP token, or city and carrier for a mobile token — only the arguments you '
-      + 'give are sent to the API, so give exactly one of those two shapes. Safe to repeat: sending '
-      + 'the already-saved target is a no-op. A static datacenter/ISP token gets a new IP in the new '
+      + 'give are sent to the API, so give exactly one of those two shapes. Or send random: true alone '
+      + 'to move it to another location this proxy can use right now (not safe to repeat blindly: each '
+      + 'repeat moves it again, so after a lost result read get_token_location first). With region and '
+      + 'city or city and carrier, repeating is safe: sending the already-saved target is a no-op. A '
+      + 'static datacenter/ISP token gets a new IP in the new '
       + 'location and spends its weekly allowance. A standard US Shared Mobile token allows this once per '
       + '48 hours; on a 409 CHANGE_LIMIT, wait for nextChangeAt (also in the error) before retrying.',
     inputSchema: {
@@ -245,9 +325,17 @@ export const registerTools = (server, { client, config, fetchImpl = fetch }) => 
       city: z.string().optional().describe('Datacenter/ISP (with region) or mobile (with carrier).'),
       carrier: z.string().optional().describe('Mobile only, together with city.'),
       country: z.string().optional().describe('Optional; must be "us" when given.'),
+      random: z.boolean().optional().describe('true: the server picks another location this proxy can use right now (a different city when there is one; for a mobile proxy otherwise another carrier in the same city). Send it alone, without region, city, carrier or country.'),
     },
-    annotations: writeAnnotations(false),
-  }, withApiErrorHandling(async ({ tokenId, region, city, carrier, country }) => {
+    // Not idempotent: with random: true every repeat moves the proxy again.
+    annotations: writeAnnotations(false, false),
+  }, withApiErrorHandling(async ({ tokenId, region, city, carrier, country, random }) => {
+    if (random === true) {
+      if ([region, city, carrier, country].some(value => value !== undefined)) {
+        return errorResult('Send random alone, without region, city, carrier or country.')
+      }
+      return jsonResult(await client.request('PUT', `/tokens/${tokenId}/location`, { body: { random: true } }))
+    }
     const body = {}
     if (region !== undefined) body.region = region
     if (city !== undefined) body.city = city
@@ -295,6 +383,115 @@ export const registerTools = (server, { client, config, fetchImpl = fetch }) => 
   }, withApiErrorHandling(async ({ tokenId }) => {
     const response = await client.request('POST', `/tokens/${tokenId}/new-ip`)
     return jsonResult(response)
+  }))
+
+  // ---- Proxy writes ---------------------------------------------------------------------------
+  // create_token, update_token, reissue_credentials and delete_token change live pay-per-GB proxies (and, for
+  // reissue_credentials, any proxy the account owns). Their descriptions say so, because the model reads
+  // them before it decides to call. Only create_token and reissue_credentials return credentials, by design:
+  // the proxy's real username and password, as get_token_credentials returns them, whatever
+  // LITPORT_MCP_REVEAL_CREDENTIALS says. update_token and delete_token never do: routine maintenance (a label,
+  // a cap, an off switch) must not put a password into the model's context.
+
+  server.registerTool('create_token', {
+    description: 'Create a live pay-per-GB proxy on the account. It works at once, is billed per GB from the '
+      + 'account balance as it is used. The result holds its real username and password, like '
+      + 'get_token_credentials: this tool returns credentials by design. Needs a positive balance and an account that is not blocked. ALWAYS send '
+      + 'externalRef (your own reference, such as your customer\'s id): if a call times out, repeat it with '
+      + 'the same externalRef and you get the proxy that exists; without one a repeat creates a second '
+      + 'proxy. A repeat with an externalRef the account already uses returns that proxy and changes '
+      + 'nothing, even if the other arguments differ. pool is a pool authKey from list_pools; leave it out '
+      + 'for a proxy that picks its pool per request. expiresAt is an ISO 8601 date-time after now, or a date '
+      + 'that means the end of that day in UTC. allowanceBytes is a traffic cap in bytes over all traffic '
+      + 'in both directions. Writes share the API key\'s 120 requests per minute; creating is also limited '
+      + 'per account per minute, and past it the call answers 429 RATE_LIMITED with a Retry-After.',
+    inputSchema: {
+      pool: z.string().optional().describe('Pool authKey from list_pools. Omit for a proxy that picks its pool per request.'),
+      label: z.string().max(255).optional().describe('Your note for the proxy, up to 255 characters.'),
+      externalRef: z.string().min(1).max(128).optional().describe('Your own reference, 1-128 printable characters, unique among the account\'s live proxies. Always send one.'),
+      expiresAt: z.string().optional().describe('ISO 8601 date-time with a zone (2026-12-31T10:00:00Z), or a date (2026-12-31) for the end of that day in UTC. Must be after now.'),
+      allowanceBytes: z.number().int().min(1).optional().describe('Traffic cap in bytes (1 GB = 1,000,000,000 bytes).'),
+    },
+    annotations: writeAnnotations(false, false),
+  }, withApiErrorHandling(async ({ pool, label, externalRef, expiresAt, allowanceBytes }) => {
+    const body = {}
+    if (pool !== undefined) body.pool = pool
+    if (label !== undefined) body.label = label
+    if (externalRef !== undefined) body.externalRef = externalRef
+    if (expiresAt !== undefined) body.expiresAt = expiresAt
+    if (allowanceBytes !== undefined) body.allowanceBytes = allowanceBytes
+    const response = await client.request('POST', '/tokens', { body })
+    return jsonResult(response)
+  }))
+
+  server.registerTool('update_token', {
+    description: 'Change a live pay-per-GB proxy. Send only what you want to change: a field you leave out '
+      + 'stays as it is, and null clears label, pool, expiresAt or allowanceBytes (null pool means the '
+      + 'proxy picks its pool per request; null allowanceBytes removes the cap). enabled: false switches '
+      + 'the proxy off; enabled: true needs a positive balance and an account that is not blocked. '
+      + 'Adding, changing or removing allowanceBytes ends the proxy\'s open connections once; clients '
+      + 'reconnect under the new cap. Switching off, relabelling and changing the expiry or the cap work '
+      + 'with an empty balance, so a customer can always be cut off. A package\'s proxy takes label only '
+      + '(any other field is FIELD_NOT_ALLOWED). Safe to repeat: the same arguments leave the same state. '
+      + 'The result is the proxy\'s id, status, label, externalRef, pool, cap and expiry, and never its '
+      + 'username, password or change-IP link; call get_token_credentials for those.',
+    inputSchema: {
+      tokenId: z.number().int().describe('The numeric token id, e.g. from list_tokens.'),
+      label: z.string().max(255).nullable().optional().describe('New note, or null to clear it.'),
+      enabled: z.boolean().optional().describe('false switches the proxy off, true switches it on.'),
+      pool: z.string().nullable().optional().describe('Pool authKey from list_pools, or null for a proxy that picks its pool per request.'),
+      expiresAt: z.string().nullable().optional().describe('ISO 8601 date-time after now, or a date (end of that day in UTC), or null for no expiry.'),
+      allowanceBytes: z.number().int().min(1).nullable().optional().describe('Traffic cap in bytes, or null to remove the cap.'),
+    },
+    annotations: writeAnnotations(true),
+  }, withApiErrorHandling(async ({ tokenId, label, enabled, pool, expiresAt, allowanceBytes }) => {
+    const body = {}
+    if (label !== undefined) body.label = label
+    if (enabled !== undefined) body.enabled = enabled
+    if (pool !== undefined) body.pool = pool
+    if (expiresAt !== undefined) body.expiresAt = expiresAt
+    if (allowanceBytes !== undefined) body.allowanceBytes = allowanceBytes
+    if (Object.keys(body).length === 0) {
+      return errorResult('Give at least one of label, enabled, pool, expiresAt or allowanceBytes to change.')
+    }
+    const response = await client.request('PATCH', `/tokens/${tokenId}`, { body })
+    return jsonResult(withoutCredentials(response))
+  }))
+
+  server.registerTool('reissue_credentials', {
+    description: 'Issue a new username, password and change-IP key for a proxy the account owns (pay-per-GB or '
+      + 'package) and return them. The old password stops working at once and its open connections close; '
+      + 'the old change-IP link stops. A package\'s allowed IPs keep working and their connections are '
+      + 'not closed, so to cut one customer off a shared package, reissue rather than rely on allowed IPs. '
+      + 'requestId makes a retry safe: use a NEW requestId for every reissue you mean, and the same one '
+      + 'only to retry a call whose answer you did not get; a repeat with the same requestId returns the '
+      + 'current credentials and issues nothing new. Without a requestId every call issues a new pair, so '
+      + 'do not repeat it blindly. The result holds the new real password, like get_token_credentials: '
+      + 'this tool returns credentials by design.',
+    inputSchema: {
+      tokenId: z.number().int().describe('The numeric token id, e.g. from list_tokens.'),
+      requestId: z.string().regex(/^[A-Za-z0-9_-]{1,64}$/).optional()
+        .describe('1-64 characters: letters, digits, underscore or hyphen. New for each reissue; the same only for a retry.'),
+    },
+    annotations: writeAnnotations(true, false),
+  }, withApiErrorHandling(async ({ tokenId, requestId }) => {
+    const response = await client.request('POST', `/tokens/${tokenId}/credentials`, requestId === undefined ? {} : { body: { requestId } })
+    return jsonResult(response)
+  }))
+
+  server.registerTool('delete_token', {
+    description: 'Delete a pay-per-GB proxy. It stops working and its open connections close. Its history stays: '
+      + 'get_usage and get_token_usage still report it, marked deleted, and its externalRef can be used '
+      + 'again. Deleting a proxy that is already deleted is not an error. A package\'s proxies can not be '
+      + 'deleted (NOT_SUPPORTED): they end with their package. To pause a proxy instead, call update_token '
+      + 'with enabled: false. The result is the token id and deleted: true, never credentials.',
+    inputSchema: {
+      tokenId: z.number().int().describe('The numeric token id, e.g. from list_tokens.'),
+    },
+    annotations: writeAnnotations(true),
+  }, withApiErrorHandling(async ({ tokenId }) => {
+    await client.request('DELETE', `/tokens/${tokenId}`)
+    return jsonResult({ tokenId, deleted: true })
   }))
 
   // ---- Packages ---------------------------------------------------------------------------------
@@ -614,7 +811,10 @@ export const registerTools = (server, { client, config, fetchImpl = fetch }) => 
       return errorResult(`Unsupported protocol "${resolvedProtocol}".`)
     }
     const port = resolvedProtocol === 'socks5' ? poolRecord.socks5Port : poolRecord.httpPort
-    const host = `${hubRecord.hostname}:${port}`
+    // An HTTPS proxy is checked against the hub's certificate, which is issued for httpsHostname; `hostname` may be a
+    // neutral name (the account's own setting) that fails that check. The URL and the hub metadata carry the same name.
+    const hostname = resolvedProtocol === 'https' ? (hubRecord.httpsHostname ?? hubRecord.hostname) : hubRecord.hostname
+    const host = `${hostname}:${port}`
 
     const usernames = []
     const urls = []
@@ -640,7 +840,7 @@ export const registerTools = (server, { client, config, fetchImpl = fetch }) => 
       username: usernames[0],
       ...(count > 1 ? { usernames } : {}),
       pool: { authKey: poolRecord.authKey, name: poolRecord.name, pricePerGb: poolRecord.pricePerGb },
-      hub: { id: hubRecord.id, name: hubRecord.name, hostname: hubRecord.hostname },
+      hub: { id: hubRecord.id, name: hubRecord.name, hostname },
       protocol: resolvedProtocol,
       pricePerGb: poolRecord.pricePerGb,
     }
@@ -720,4 +920,94 @@ export const registerTools = (server, { client, config, fetchImpl = fetch }) => 
       return errorResult(`Could not fetch ${target.toString()}: ${cause.message}`)
     }
   })
+
+  // ---- Support ----------------------------------------------------------------------------------
+  // Without an API key a conversation is a guest one, and the API returns its access token (lsc_…)
+  // only once. The token stays in this process for the session and is never put in a tool result, so
+  // it cannot end up in the model's context. With an API key every call reaches the account's own
+  // conversation and no token exists.
+
+  const supportTokens = new Map()
+  let currentConversationId = null
+
+  const resolveSupportConversation = conversationId => {
+    const id = conversationId || currentConversationId
+    if (!id) return { error: 'There is no support conversation in this session yet. Call contact_support first.' }
+    if (supportTokens.has(id)) return { id, bearer: supportTokens.get(id) }
+    if (client.hasApiKey) return { id, bearer: undefined }
+    return { error: `This session has no access token for conversation ${id}. A conversation started without an API key can only be read by the session that started it.` }
+  }
+
+  const conversationIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,64}$/)
+    .describe('Defaults to the conversation started or used most recently in this session.')
+
+  server.registerTool('contact_support', {
+    description: 'Contact Litport support: start a conversation with a first message. Without '
+      + 'LITPORT_API_KEY this is a guest conversation: "email" is required (where we can reach you) and '
+      + 'only general questions can be answered; at most 3 new guest conversations per hour. With '
+      + 'LITPORT_API_KEY it is the account\'s own conversation, where support can help with orders and '
+      + 'proxies, and "email" is not used. Replies are not instant: call get_support_replies about every '
+      + '30 seconds. To add to a conversation that already exists, use reply_to_support. Never put API '
+      + 'keys or proxy passwords in the message.',
+    inputSchema: {
+      message: z.string().min(1).max(4000).describe('The question or request, up to 4,000 characters.'),
+      email: z.email().optional().describe('Required without LITPORT_API_KEY; not used with it.'),
+    },
+    annotations: writeAnnotations(false, false),
+  }, withApiErrorHandling(async ({ message, email }) => {
+    const keyless = !client.hasApiKey
+    if (keyless && !email) {
+      return errorResult('"email" is required when the server has no LITPORT_API_KEY: it is where we can reach you.')
+    }
+    const response = await client.request('POST', '/support/conversations', keyless
+      ? { body: { email, message }, bearer: null }
+      : { body: { message } })
+    currentConversationId = response.conversationId
+    if (response.accessToken) supportTokens.set(response.conversationId, response.accessToken)
+    const { accessToken: _accessToken, ...visible } = response
+    return jsonResult({
+      ...visible,
+      note: 'The reply is not instant. Call get_support_replies about every 30 seconds.',
+    })
+  }))
+
+  server.registerTool('get_support_replies', {
+    description: 'Read a support conversation: the messages after "after", oldest first, and who the '
+      + 'conversation is waiting on (waitingOn: "us" means Litport, "customer" means you). Replies '
+      + 'are not pushed, so poll about every 30 seconds (pollAfterSeconds). Pass the last seq you already '
+      + 'have as "after" to get only new messages; leave it out to read from the start. When "more" is '
+      + 'true, call again with "after" set to the last seq received.',
+    inputSchema: {
+      conversationId: conversationIdSchema.optional(),
+      after: z.number().int().min(0).optional().describe('The highest message seq you already have.'),
+    },
+    annotations: annotations(true),
+  }, withApiErrorHandling(async ({ conversationId, after }) => {
+    const target = resolveSupportConversation(conversationId)
+    if (target.error) return errorResult(target.error)
+    const response = await client.request('GET', `/support/conversations/${encodeURIComponent(target.id)}`, {
+      query: { after },
+      bearer: target.bearer,
+    })
+    return jsonResult(response)
+  }))
+
+  server.registerTool('reply_to_support', {
+    description: 'Add a message to a support conversation started with contact_support: an answer to a '
+      + 'question from support, or more detail. Up to 4,000 characters, 30 messages per conversation per '
+      + '24 hours. No attachments. Never put API keys or proxy passwords in the message.',
+    inputSchema: {
+      message: z.string().min(1).max(4000),
+      conversationId: conversationIdSchema.optional(),
+    },
+    annotations: writeAnnotations(false, false),
+  }, withApiErrorHandling(async ({ message, conversationId }) => {
+    const target = resolveSupportConversation(conversationId)
+    if (target.error) return errorResult(target.error)
+    const response = await client.request('POST', `/support/conversations/${encodeURIComponent(target.id)}/messages`, {
+      body: { message },
+      bearer: target.bearer,
+    })
+    return jsonResult(response)
+  }))
 }

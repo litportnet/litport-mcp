@@ -95,3 +95,31 @@ test('an API error with no Retry-After header or nextChangeAt leaves both unset'
     return true
   })
 })
+
+test('ApiError keeps the API\'s retryable flag only when it is a boolean', async () => {
+  const answer = error => createClient({
+    apiKey: validKey,
+    baseUrl,
+    fetchImpl: async () => jsonResponse(503, { error }),
+  }).get('/tokens')
+  for (const retryable of [true, false]) {
+    // eslint-disable-next-line no-await-in-loop
+    await assert.rejects(answer({ code: 'SERVICE_UNAVAILABLE', message: 'Down.', retryable }), error => {
+      assert.ok(error instanceof ApiError)
+      assert.equal(error.retryable, retryable)
+      assert.equal(error.error.retryable, retryable, 'the decoded error object stays verbatim')
+      return true
+    })
+  }
+  for (const retryable of [undefined, 'true', 1, null]) {
+    // eslint-disable-next-line no-await-in-loop
+    await assert.rejects(answer({ code: 'SERVICE_UNAVAILABLE', message: 'Down.', retryable }), error => {
+      assert.ok(error instanceof ApiError)
+      assert.equal(Object.hasOwn(error, 'retryable'), false, String(retryable))
+      return true
+    })
+  }
+  // an error that is not from the API has none either
+  assert.equal(Object.hasOwn(new ApiError('Could not reach the Litport API.'), 'retryable'), false)
+  assert.equal(new ApiError('x', { retryable: false }).retryable, false)
+})

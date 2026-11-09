@@ -41,10 +41,10 @@ const fixedToken = {
   poolSelection: { mode: 'fixed', pool: { authKey: 'residential-main', name: 'Residential' } },
 }
 
-const setup = ({ tokens }) => {
+const setup = ({ tokens, pools = poolsData }) => {
   const server = createFakeServer()
   const routes = [
-    [`${baseUrl}/api/v1/pay-per-gb/pools`, jsonResponse(200, { data: poolsData, page: { nextCursor: null } })],
+    [`${baseUrl}/api/v1/pay-per-gb/pools`, jsonResponse(200, { data: pools, page: { nextCursor: null } })],
     ...Object.entries(tokens).map(([id, token]) => [`${baseUrl}/api/v1/tokens/${id}`, jsonResponse(200, { data: token })]),
   ]
   const fetchImpl = createFakeFetch(routes)
@@ -158,4 +158,40 @@ test('passwordless is refused by name on a pay-per-GB token', async () => {
   const result = await server.call('build_proxy_url', { tokenId: 42, passwordless: true })
   assert.equal(result.isError, true)
   assert.match(result.content[0].text, /only for unlimited tokens/)
+})
+
+// An account that uses neutral addresses sees a neutral `hostname` on every hub; the hub's certificate is issued for
+// `httpsHostname`, so an HTTPS URL must carry that name or the client's certificate check fails.
+const neutralPools = [{
+  name: 'Residential', proxiesType: 'residential', authKey: 'neutral-pool', pricePerGb: '5.00', httpPort: 1337, socks5Port: 5337,
+  hubs: [{ id: 'us-1', name: 'US Hub', hostname: 'edge-1.neutral.test', httpsHostname: 'hub-us-1.litport.test' }],
+}]
+
+const parsePayload = result => JSON.parse(result.content[0].text.slice(result.content[0].text.indexOf('{')))
+
+test('an https URL carries the hub\'s certificate name (httpsHostname), and http and socks5 keep the public hostname', async () => {
+  const server = setup({ tokens: { 42: flexibleToken }, pools: neutralPools })
+
+  const https = await server.call('build_proxy_url', { tokenId: 42, pool: 'neutral-pool', protocol: 'https' })
+  assert.equal(https.isError, undefined)
+  const httpsPayload = parsePayload(https)
+  assert.equal(httpsPayload.urls[0], 'https://user123_pool-neutral-pool:super-secret-pass@hub-us-1.litport.test:1337')
+  assert.equal(httpsPayload.hub.hostname, 'hub-us-1.litport.test', 'the metadata names the host the URL uses')
+  assert.equal(httpsPayload.protocol, 'https')
+
+  const http = await server.call('build_proxy_url', { tokenId: 42, pool: 'neutral-pool' })
+  assert.equal(parsePayload(http).urls[0], 'http://user123_pool-neutral-pool:super-secret-pass@edge-1.neutral.test:1337')
+  assert.equal(parsePayload(http).hub.hostname, 'edge-1.neutral.test')
+
+  const socks = await server.call('build_proxy_url', { tokenId: 42, pool: 'neutral-pool', protocol: 'socks5' })
+  assert.equal(parsePayload(socks).urls[0], 'socks5://user123_pool-neutral-pool:super-secret-pass@edge-1.neutral.test:5337')
+  assert.equal(parsePayload(socks).hub.hostname, 'edge-1.neutral.test')
+})
+
+test('an https URL falls back to hostname when the hub record has no httpsHostname', async () => {
+  const server = setup({ tokens: { 42: flexibleToken } })
+  const https = await server.call('build_proxy_url', { tokenId: 42, pool: 'residential-main', protocol: 'https', count: 2 })
+  const payload = parsePayload(https)
+  assert.deepEqual(payload.urls, Array.from({ length: 2 }, () => 'https://user123_pool-residential-main:super-secret-pass@hub-us-1.litport.test:1337'))
+  assert.equal(payload.hub.hostname, 'hub-us-1.litport.test')
 })

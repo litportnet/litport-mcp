@@ -57,7 +57,7 @@ test('set_token_location sends only the keys given, for a datacenter/ISP shape',
   const server = setup({ routes: [[`${baseUrl}/api/v1/tokens/201/location`, record]] })
 
   assert.deepEqual(server.tools.get('set_token_location').config.annotations, {
-    readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true,
+    readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true,
   })
 
   await server.call('set_token_location', { tokenId: 201, region: 'georgia', city: 'atlanta' })
@@ -73,6 +73,59 @@ test('set_token_location sends only the keys given, for a mobile shape', async (
 
   await server.call('set_token_location', { tokenId: 301, city: 'atlanta', carrier: 'att' })
   assert.deepEqual(JSON.parse(calls[0].options.body), { city: 'atlanta', carrier: 'att' })
+})
+
+test('set_token_location with random: true sends {"random": true} and nothing else', async () => {
+  const calls = []
+  const record = (url, options) => { calls.push({ url: url.toString(), options }); return jsonResponse(200, { data: { target: { country: 'us', city: 'denver', carrier: 't-mobile' } } }) }
+  const server = setup({ routes: [[`${baseUrl}/api/v1/tokens/301/location`, record]] })
+
+  const result = await server.call('set_token_location', { tokenId: 301, random: true })
+  assert.equal(result.isError, undefined)
+  assert.equal(calls.length, 1)
+  assert.equal(calls[0].options.method, 'PUT')
+  assert.equal(calls[0].options.body, JSON.stringify({ random: true }))
+  assert.equal(JSON.parse(result.content[0].text).data.target.city, 'denver', 'the answer shows the pick')
+
+  // random: false is not a random request: the fields go as before
+  await server.call('set_token_location', { tokenId: 301, random: false, city: 'atlanta', carrier: 'att' })
+  assert.deepEqual(JSON.parse(calls[1].options.body), { city: 'atlanta', carrier: 'att' })
+})
+
+test('set_token_location with random: true and any location field is an error, and the API is not called', async () => {
+  const calls = []
+  const server = setup({ routes: [[`${baseUrl}/api/v1/tokens/`, url => { calls.push(url.toString()); return jsonResponse(200, { data: {} }) }]] })
+  for (const extra of [{ region: 'georgia' }, { city: 'atlanta' }, { carrier: 'att' }, { country: 'us' }, { region: 'georgia', city: 'atlanta' }]) {
+    // eslint-disable-next-line no-await-in-loop
+    const result = await server.call('set_token_location', { tokenId: 301, random: true, ...extra })
+    assert.equal(result.isError, true, JSON.stringify(extra))
+    assert.equal(result.content[0].text, 'Send random alone, without region, city, carrier or country.')
+  }
+  assert.deepEqual(calls, [])
+})
+
+test('set_token_location documents random and says it is not safe to repeat blindly', () => {
+  const server = setup()
+  const { description, inputSchema } = server.tools.get('set_token_location').config
+  assert.match(description, /random: true alone/)
+  assert.match(description, /not safe to repeat blindly/)
+  assert.match(description, /read get_token_location first/)
+  assert.ok(inputSchema.random, 'random is an input')
+  assert.equal(inputSchema.random.safeParse(true).success, true)
+  assert.equal(inputSchema.random.safeParse(undefined).success, true)
+  assert.equal(inputSchema.random.safeParse('true').success, false)
+})
+
+test('a LOCATION_UNAVAILABLE answer to a random change reaches the model with its retryable flag', async () => {
+  const server = setup({
+    routes: [[`${baseUrl}/api/v1/tokens/301/location`, jsonResponse(409, {
+      error: { code: 'LOCATION_UNAVAILABLE', message: 'No other location is available for this proxy right now. Nothing changed.', retryable: false },
+    })]],
+  })
+  const result = await server.call('set_token_location', { tokenId: 301, random: true })
+  assert.equal(result.isError, true)
+  assert.match(result.content[0].text, /No other location is available/)
+  assert.match(result.content[0].text, /retryable: false/)
 })
 
 test('a CHANGE_LIMIT error surfaces nextChangeAt and Retry-After so the model does not retry blindly', async () => {

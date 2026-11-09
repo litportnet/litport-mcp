@@ -161,7 +161,7 @@ export const proxyErrors = Object.freeze([
     "message": "Remote proxy connection error",
     "http": "500 or 503",
     "retry": "Bounded backoff",
-    "action": "Retry may select a different remote proxy."
+    "action": "Retry with backoff; a retry may select a different remote proxy. If you target a country, region or city and this persists, that location may have no IP online right now: retry later or widen the location."
   },
   {
     "code": 15,
@@ -185,7 +185,7 @@ export const proxyErrors = Object.freeze([
     "message": "packageBandwidthExceeded",
     "http": "403",
     "retry": "Not a network retry",
-    "action": "The package has used its traffic allowance for the current period. Wait for the period to renew, or move to a larger allowance in the dashboard."
+    "action": "Only an older package with a traffic cap can hit this: it has used its traffic for the current period. Wait for the period to renew, or contact support."
   },
   {
     "code": 18,
@@ -193,7 +193,7 @@ export const proxyErrors = Object.freeze([
     "message": "packageEntitlementUnavailable",
     "http": "503",
     "retry": "Bounded backoff",
-    "action": "The allowance could not be read or reserved in time. Retry briefly; if it persists, contact support with the hub, token ID, and timestamp."
+    "action": "The package's entitlement could not be read or reserved in time. Retry briefly; if it persists, contact support with the hub, token ID, and timestamp."
   },
   {
     "code": 19,
@@ -225,7 +225,31 @@ export const proxyErrors = Object.freeze([
     "message": "packageEntitlementStale",
     "http": "403",
     "retry": "No automatic retry",
-    "action": "The hub is holding an allowance record too old to trust. Contact support with the hub, token ID, and timestamp."
+    "action": "The hub is holding a package record too old to trust. Contact support with the hub, token ID, and timestamp."
+  },
+  {
+    "code": 23,
+    "symbol": "ErrorClientAborted",
+    "message": "Client closed the connection",
+    "http": "Not sent (the client had already closed)",
+    "retry": "Not applicable",
+    "action": "Your client closed or reset the connection before the request finished. Check client timeouts and connection reuse."
+  },
+  {
+    "code": 24,
+    "symbol": "ErrorPpgAllowanceExceeded",
+    "message": "Traffic allowance used up",
+    "http": "403",
+    "retry": "Not a network retry",
+    "action": "This proxy's traffic limit is used up. The account owner can raise or remove the limit in the dashboard or through the API."
+  },
+  {
+    "code": 25,
+    "symbol": "ErrorPpgAllowanceUnavailable",
+    "message": "Traffic allowance unavailable",
+    "http": "503",
+    "retry": "Bounded backoff",
+    "action": "This proxy's traffic limit could not be read or reserved in time. Retry briefly; if it persists, contact support with the hub, token ID, and timestamp."
   }
 ])
 
@@ -233,7 +257,7 @@ export const socksReplies = Object.freeze([
   {
     "reply": "auth 0x01",
     "meaning": "Login rejected",
-    "categories": "The username/password step (RFC 1929) failed and the connection closed before any request. Most token and account checks run here: unknown, disabled or expired token or a wrong password (4), token access mismatch (5), wrong hub (8) or protocol (9), invalid PPG pool parameters (11), PPG accounting (12), insufficient balance (13), and package state (17–22). Clients usually report this as an authentication failure."
+    "categories": "The username/password step (RFC 1929) failed and the connection closed before any request. Most token and account checks run here: unknown, disabled or expired token or a wrong password (4), token access mismatch (5), wrong hub (8) or protocol (9), invalid PPG pool parameters (11), PPG accounting (12), insufficient balance (13), package state (17–22), and a proxy traffic limit (24–25). Clients usually report this as an authentication failure."
   },
   {
     "reply": "0x01",

@@ -1,10 +1,13 @@
 export class ApiError extends Error {
-  constructor(message, { status, code, requestId, docsUrl, nextChangeAt, retryAfter, error } = {}) {
+  constructor(message, { status, code, requestId, docsUrl, retryable, nextChangeAt, retryAfter, error } = {}) {
     super(message)
     this.status = status
     this.code = code
     this.requestId = requestId
     this.docsUrl = docsUrl
+    // The API's own answer to "can this same request, sent again, succeed and is it safe to send?" -- set only
+    // when the API sent a boolean, so a caller can tell "false" from "not said".
+    if (typeof retryable === 'boolean') this.retryable = retryable
     // nextChangeAt (a 409 CHANGE_LIMIT field) and the Retry-After header both tell a caller when a
     // wait ends -- kept as their own properties, plus the whole decoded `error` object verbatim, so
     // a tool never has to guess which of the API's documented fields survived.
@@ -37,7 +40,13 @@ const buildUrl = (baseUrl, path, query = {}) => {
 export const userAgentFor = version => `litport-mcp/${version}`
 
 export const createClient = ({ apiKey, baseUrl, userAgent, fetchImpl = fetch, timeoutMs = REQUEST_TIMEOUT_MS }) => {
-  const request = async (method, path, { body, headers = {}, query } = {}) => {
+  // `bearer` picks the credential for one call: omitted = the account API key, a string = a support
+  // conversation access token (lsc_…), null = no Authorization header (a keyless first message).
+  const request = async (method, path, { body, headers = {}, query, bearer } = {}) => {
+    if (bearer === undefined && !apiKey) {
+      throw new ApiError('This call needs a Litport account API key. Set LITPORT_API_KEY in the MCP server\'s env block; Settings at https://litport.net/users/settings creates one.')
+    }
+    const credential = bearer === undefined ? apiKey : bearer
     const url = buildUrl(baseUrl, path, query)
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), timeoutMs)
@@ -50,7 +59,7 @@ export const createClient = ({ apiKey, baseUrl, userAgent, fetchImpl = fetch, ti
       response = await fetchImpl(url, {
         headers: {
           ...safeHeaders,
-          Authorization: `Bearer ${apiKey}`,
+          ...(credential ? { Authorization: `Bearer ${credential}` } : {}),
           Accept: 'application/json',
           ...(userAgent ? { 'User-Agent': userAgent } : {}),
           ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
@@ -84,6 +93,7 @@ export const createClient = ({ apiKey, baseUrl, userAgent, fetchImpl = fetch, ti
         code: error.code,
         requestId: error.requestId,
         docsUrl: error.docsUrl,
+        retryable: error.retryable,
         nextChangeAt: error.nextChangeAt,
         retryAfter,
         error,
@@ -96,5 +106,6 @@ export const createClient = ({ apiKey, baseUrl, userAgent, fetchImpl = fetch, ti
     request,
     // Keep the original GET helper as the stable read-only client API.
     get: (path, query) => request('GET', path, { query }),
+    hasApiKey: Boolean(apiKey),
   }
 }
